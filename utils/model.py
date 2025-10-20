@@ -1,89 +1,61 @@
-# crypto_loan_simulator.py
 """
-Simula un portafolio de préstamos respaldados por cripto (colateral BTC/ETH)
-empleando Segment Trees para saltar directamente al próximo evento crítico
-(margin‑call o liquidación) sin iterar minuto a minuto.
+Simulador de préstamos respaldados por cripto (BTC/ETH) con Segment Tree
 
-Parámetros base (sin rehypothecation)
-    • LTV inicial: 50 %
-    • Margin-Call LTV: 72 %
-    • Liquidación LTV: 80 %
-    • Tasa anual simple: 18 % (BTC) / 20 % (ETH)
-    • Comisión de liquidación: 8 % del valor del colateral capturado.
-
-Parámetros adicionales (rehypothecation)
-    • Re‑hipotecación opcional del 0 %, 10 %, 20 %, 30 % o 40 % del colateral.
-      Cada nivel ajusta los umbrales LTV y la tasa de interés conforme a
-      PARAM_TABLE.
-    • Nueve tamaños de préstamo en MXN (200k → 2 M) con pesos configurables.
-    • El prestatario ya no puede amortizar parcialmente; solo puede:
-          – Aportar colateral adicional (prob. inicial 25 %, que decae 25 %
-            tras cada margin‑call), o
-          – Permitir liquidación.
-    • Renovación anual opcional: prob. inicial 50 %, que decae con cada
-      renovación.
-    • Ganancias/pérdidas de la porción rehypotecada se calculan utilizando
-      señales técnicas (RSI, MA20/50, MACD) y se reportan al cierre.
-    • evaluate_loan_sizes() permite estimar ROI por tamaño de préstamo
-      incorporando la tarifa de custodia (0.4 % por transacción).
-
-Salidas
-    • loan_log — lista[dict] con el historial completo de cada préstamo.
-    • summary_df — DataFrame con métricas agregadas de ingresos y riesgo.
 """
 
 from __future__ import annotations
-import random, numpy as np, pandas as pd, ta
+import random
+import numpy as np
+import pandas as pd
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Tuple, Any
 
 # ── CONFIG ───────────────────────────────────────────────────────────────────
-CONFIG: Dict[str, float | List[int] | str] = {
+CONFIG: Dict[str, Any] = {
     "MXN_USD": 19.0,
-    # valores base (rehypo = 0 %)
-    "BASE_LTV": 0.50,
-    "BASE_MC": 0.72,
-    "BASE_LIQ": 0.80,
-    "BASE_INT_BTC": 0.18,
-    "BASE_INT_ETH": 0.20,
+    # LTVs base
+    "INIT_LTV": 0.50,   # LTV objetivo tras MC (y LTV inicial)
+    "MC_LTV":   0.72,
+    "LIQ_LTV":  0.80,
+    # Tasas simples anuales
+    "INT_BTC": 0.18,
+    "INT_ETH": 0.20,
+    # Comisión sobre colateral liquidado
     "LIQUIDATION_FEE_RATE": 0.08,
-    "P_ADD_INIT": 0.25,
-    "P_RENEW_INIT": 0.50,
-    # tamaños de préstamo MXN
-    "LOAN_SIZES_MXN": [200_000, 500_000, 750_000, 1_000_000,
-                        1_250_000, 1_500_000, 1_750_000, 2_000_000],
-    "SIZE_WEIGHTS": [1]*8,  # uniformes; editar si se desea
-    "PRICE_CSV": "prices.csv",
-    "N_LOANS": 10000,
-    "SEED": 42,
+    # Probabilidades base de decisión en MC (decaen con cada MC: ^margin_calls)
+    "P_ADD_INIT":     0.25,  # agregar colateral
+    "P_AMORT_INIT":   0.25,  # amortizar principal
+    # Renovación (decisión anual)
+    "P_RENEW_INIT":   0.50,
+    # tamaños de préstamo en MXN
+    "LOAN_SIZES_MXN": [200_000, 500_000, 750_000, 1_000_000, 1_250_000, 1_500_000, 1_750_000, 2_000_000],
+    "SIZE_WEIGHTS":   [1]*8,  # uniformes; editar si se desea
+    # datos de precios
+    "PRICE_CSV":      "prices.csv",  # columnas esperadas: date,BTC,ETH (minutales)
+    # simulación
+    "N_LOANS":        10_000,
+    "SEED":           42,
+    # logging detallado de eventos
+    "LOG_EVENTS":     True,
 }
 
-# niveles de re‑hipotecación permitidos
-REH_LEVELS = [0.0, 0.4]
-
-# PARAM_TABLE: (LTV_inicial, MC_LTV, LIQ_LTV, Δtasa)
-PARAM_TABLE = {
-    0.0: (0.50, 0.72, 0.80,  0.0000),   # sin descuento
-    #0.1: (0.49, 0.71, 0.79, -0.0026),   # −0.26 pp
-    #0.2: (0.47, 0.70, 0.78, -0.0052),   # −0.52 pp
-    #0.3: (0.45, 0.68, 0.77, -0.0078),   # −0.78 pp
-    0.4: (0.43, 0.66, 0.75, -0.0104),   # −1.04 pp
-}
-
+MINUTES_PER_YEAR = 525_600
 random.seed(CONFIG["SEED"]); np.random.seed(CONFIG["SEED"])
 
-# ── SegmentTree / data helpers (unchanged) ───────────────────────────────────
+# ── SegmentTree / data helpers ───────────────────────────────────────────────
 class SegmentTree:
     __slots__ = ("l", "r", "mid", "val", "ind", "L", "R")
-    def __init__(self, arr, l=0, r=None):
+    def __init__(self, arr: List[float], l: int = 0, r: int | None = None):
         if r is None:
             r = len(arr)
-        self.l, self.r = l, r; self.mid = (l + r) // 2
+        self.l, self.r = l, r
+        self.mid = (l + r) // 2
         self.val, self.ind = arr[l], l
         if r - l > 1:
-            self.L = SegmentTree(arr, l, self.mid); self.R = SegmentTree(arr, self.mid, r)
+            self.L = SegmentTree(arr, l, self.mid)
+            self.R = SegmentTree(arr, self.mid, r)
             if self.L.val <= self.R.val:
                 self.val, self.ind = self.L.val, self.L.ind
             else:
@@ -91,7 +63,7 @@ class SegmentTree:
         else:
             self.L = self.R = None
 
-    def range_min(self, ql, qr):
+    def range_min(self, ql: int, qr: int) -> Tuple[float, int]:
         if qr <= self.l or ql >= self.r:
             return float("inf"), -1
         if ql <= self.l and qr >= self.r:
@@ -102,56 +74,21 @@ class SegmentTree:
 
 
 def load_price_df(p: str | Path) -> pd.DataFrame:
+    """Lee CSV con índice datetime ascendente y columnas de precios por coin."""
     return pd.read_csv(p, parse_dates=["date"]).set_index("date").sort_index()
 
 
-def align_series(df, coin):
+def align_series(df: pd.DataFrame, coin: str) -> Tuple[np.ndarray, List[pd.Timestamp]]:
     return df[coin].values.astype(float), df.index.to_list()
 
 
-def pad_loc(idx, ts):
+def pad_loc(idx: pd.DatetimeIndex, ts: pd.Timestamp) -> int:
     if ts in idx:
         return idx.get_loc(ts)
     loc = idx.get_indexer([ts], method="pad")[0]
     return 0 if loc == -1 else int(loc)
 
-# ── TA signals ────────────────────────────────────────────────────────────
-
-def build_signals(df, coin):
-    c = df[coin]; h = df[f"{coin}_HIGH"]; l = df[f"{coin}_LOW"]
-    d = pd.DataFrame({"c": c, "h": h, "l": l})
-    d["RSI"] = ta.momentum.rsi(d.c, 14)
-    d["MA20"] = ta.trend.sma_indicator(d.c, 20)
-    d["MA50"] = ta.trend.sma_indicator(d.c, 50)
-    d["MACD"] = ta.trend.macd(d.c)
-    d["MACDs"] = ta.trend.macd_signal(d.c)
-
-    def _sig(r):
-        return "BUY" if sum([r.MA20 > r.MA50, r.MACD > r.MACDs, r.RSI < 30]) >= 1 else (
-            "SELL" if r.RSI > 60 else "HOLD")
-
-    return d.apply(_sig, axis=1).values
-
-# ── RehypoAccount ──────────────────────────────────────────────────────────
-
-@dataclass
-class RehypoAccount:
-    coins: float; cash: float; trades: int = 0
-    
-    def buy_all(self, p):
-        if self.cash <= 0:
-            return
-        self.coins += self.cash / p; self.cash = 0; self.trades += 1
-
-    def sell_all(self, p):
-        if self.coins <= 0:
-            return
-        self.cash += self.coins * p; self.coins = 0; self.trades += 1
-
-    def value(self, p):
-        return self.cash + self.coins * p
-
-# ── Clase Loan ────────────────────────────────────────────────────────────
+# ── Clase Loan ──────────────────────────────────────────────────────────────
 @dataclass
 class Loan:
     loan_id: int
@@ -160,246 +97,320 @@ class Loan:
     start_idx: int
     df: pd.DataFrame
     tree: SegmentTree
-    signals: np.ndarray
 
-    # Campos calculados
-    reh_f: float = field(init=False)
+    # Parámetros derivados
     principal_usd: float = field(init=False)
     collateral_coin_amt: float = field(init=False)
-    init_ltv: float = field(init=False)
-    mc_ltv: float = field(init=False)
-    lq_ltv: float = field(init=False)
-    rate:    float = field(init=False)
+    init_ltv: float = field(default=CONFIG["INIT_LTV"], init=False)
+    mc_ltv:   float = field(default=CONFIG["MC_LTV"], init=False)
+    liq_ltv:  float = field(default=CONFIG["LIQ_LTV"], init=False)
+    rate:     float = field(init=False)
 
     # Estado dinámico
-    p_add_base: float = CONFIG["P_ADD_INIT"]
-    reh:            RehypoAccount = field(init=False)
-    accrued_interest: float = 0
-    interest_usd:     float = 0
-    liq_fee:          float = 0
-    liq_rec:          float = 0
-    reh_gain:         float = 0
-    shortfall:        float = 0
+    accrued_interest: float = 0.0
+    interest_usd:     float = 0.0
+    liq_fee:          float = 0.0
+    liq_rec:          float = 0.0
+    shortfall:        float = 0.0
+    amortized_usd:    float = 0.0
 
     status:        str = "active"
     margin_calls:  int = 0
     renewals:      int = 0
     end_idx:       int = field(init=False)
 
+    # Logging
+    events: List[Dict[str, Any]] = field(default_factory=list)
+
+    def _now_ts(self, i: int) -> pd.Timestamp:
+        return self.df.index[i]
+
+    def _log(self, kind: str, i: int, **kw: Any) -> None:
+        if CONFIG.get("LOG_EVENTS", False):
+            rec = {"t": self._now_ts(i), "i": int(i), "event": kind} | kw
+            self.events.append(rec)
+
     # ── Inicialización ────────────────────────────────────────────────
     def __post_init__(self):
-        # Parámetros por rehypo
-        self.reh_f = random.choice(REH_LEVELS)
-        self.init_ltv, self.mc_ltv, self.lq_ltv, delta = PARAM_TABLE[self.reh_f]
-        base_rate = CONFIG["BASE_INT_BTC"] if self.coin == "BTC" else CONFIG["BASE_INT_ETH"]
-        self.rate = base_rate + delta
+        base_rate = CONFIG["INT_BTC"] if self.coin == "BTC" else CONFIG["INT_ETH"]
+        self.rate = base_rate
 
         # Timestamp y precio inicial
         self.start_ts = self.df.index[self.start_idx]
         self.start_price = float(self.df.iloc[self.start_idx][self.coin])
 
-        # Principal y colateral TOTAL necesario al LTV inicial (antes de rehypo)
+        # Principal y colateral requerido al LTV inicial
         self.principal_usd = self.principal_mxn / CONFIG["MXN_USD"]
         tot_init_coll = (self.principal_usd / self.init_ltv) / self.start_price
-        self.initial_total_collateral_coins = tot_init_coll
+        self.initial_total_collateral_coins = float(tot_init_coll)
 
-        # Separación de rehypo (una sola vez)
-        reh_coins = tot_init_coll * self.reh_f
-        self.collateral_coin_amt = tot_init_coll - reh_coins
-        self.reh = RehypoAccount(coins=0.0, cash=reh_coins * self.start_price)
+        # Todo el colateral se mantiene como colateral (no rehípoteca)
+        self.collateral_coin_amt = float(tot_init_coll)
 
         self.end_idx = self.start_idx
-
-    # ── Trading de la cuenta rehypotecada ─────────────────────────────
-    def _trade(self, price: float, idx: int):
-        sig = self.signals[idx]
-        if sig == "BUY":
-            self.reh.buy_all(price)
-        elif sig == "SELL":
-            self.reh.sell_all(price)
+        self._log("start", self.start_idx, price=self.start_price,
+                  principal_usd=self.principal_usd,
+                  collateral_coins=self.collateral_coin_amt)
 
     # ── Ejecución del préstamo completo ───────────────────────────────
-    def run(self) -> Dict:
+    def run(self) -> Dict[str, Any]:
         close = self.df[self.coin].values.astype(float)
         n     = len(close)
         idx   = self.start_idx
+
         matur = pad_loc(self.df.index, self.df.index[idx] + timedelta(days=365))
         matur = min(matur, n - 1)
 
         while self.status == "active":
+            # Umbrales dinámicos con el principal/colateral vigentes
             price = close[idx]
-            self._trade(price, idx)
-
-            # Precios umbral para MC y liquidación
             mc_p = self.principal_usd / (self.collateral_coin_amt * self.mc_ltv)
-            lq_p = self.principal_usd / (self.collateral_coin_amt * self.lq_ltv)
+            lq_p = self.principal_usd / (self.collateral_coin_amt * self.liq_ltv)
 
-            # Buscar el próximo punto donde el precio rompe mc_p
+            # Buscar el siguiente índice donde el mínimo cae por debajo de mc_p
             lo, hi = idx, n
             while lo + 1 < hi:
                 mid = (lo + hi) // 2
-                hi  = mid if self.tree.range_min(idx, mid + 1)[0] < mc_p else hi
-                lo  = mid if self.tree.range_min(idx, mid + 1)[0] >= mc_p else lo
+                mn, _ = self.tree.range_min(idx, mid + 1)
+                if mn < mc_p:
+                    hi = mid
+                else:
+                    lo = mid
 
             nxt = min(v for v in [hi if hi < n else None, matur, n - 1] if v is not None)
-            self.accrued_interest += self.principal_usd * self.rate * (nxt - idx) / 525_600
+
+            # Devengar interés hasta el siguiente punto (nxt)
+            minutes = max(nxt - idx, 0)
+            self.accrued_interest += self.principal_usd * self.rate * (minutes / MINUTES_PER_YEAR)
+            if minutes:
+                self._log("accrue", nxt, minutes=minutes, accrued=self.accrued_interest)
             idx = nxt
             self.end_idx = idx
             price = close[idx]
 
             # ── Caso 1: llegó al vencimiento ───────────────────────
             if idx >= matur:
-                if random.random() < CONFIG["P_RENEW_INIT"] ** (self.renewals + 1) and idx + 525_600 < n:
+                # Decidir renovación
+                if random.random() < (CONFIG["P_RENEW_INIT"] ** (self.renewals + 1)) and idx + MINUTES_PER_YEAR < n:
                     self.renewals += 1
-                    matur += 525_600
+                    matur = min(idx + MINUTES_PER_YEAR, n - 1)
+                    self._log("renew", idx, renewals=self.renewals)
                     continue
-                self.interest_usd += self.accrued_interest
+                # Cierre por vencimiento
+                self.interest_usd += self.accrued_interest; self.accrued_interest = 0.0
                 self.status = "repaid_maturity"
+                self._log("close_maturity", idx, interest_usd=self.interest_usd)
                 break
 
             # ── Caso 2: Margin Call ────────────────────────────────
             if hi < n and idx == hi:
                 self.margin_calls += 1
+                self._log("margin_call", idx, price=price, margin_calls=self.margin_calls)
 
-                # El cliente decide añadir colateral
-                if random.random() < CONFIG["P_ADD_INIT"] ** self.margin_calls:
-                    target = self.principal_usd / self.init_ltv
-                    extra  = target - price * self.collateral_coin_amt
-                    self.collateral_coin_amt += extra / price
+                # Probabilidades (decaen con # de MC)
+                p_add   = CONFIG["P_ADD_INIT"]   ** self.margin_calls
+                p_amort = CONFIG["P_AMORT_INIT"] ** self.margin_calls
+                u = random.random()
+
+                # 2.a) Agregar colateral
+                if u < p_add:
+                    target_val_usd = self.principal_usd / self.init_ltv
+                    curr_val_usd   = price * self.collateral_coin_amt
+                    extra_usd      = max(target_val_usd - curr_val_usd, 0.0)
+                    if extra_usd > 0:
+                        extra_coins = extra_usd / price
+                        self.collateral_coin_amt += extra_coins
+                        self._log("add_collateral", idx, extra_usd=extra_usd, extra_coins=extra_coins,
+                                  new_collateral=self.collateral_coin_amt)
+                    # continuar activo
                     continue
 
-                # Si no añade colateral → liquidar
+                # 2.b) Amortizar principal (pagar para bajar LTV)
+                if u < p_add + p_amort:
+                    # Consumar interés devengado hasta ahora
+                    self.interest_usd += self.accrued_interest; self.accrued_interest = 0.0
+                    # Nuevo principal objetivo para volver a INIT_LTV
+                    new_principal = price * self.collateral_coin_amt * self.init_ltv
+                    amort = max(self.principal_usd - new_principal, 0.0)
+                    if amort > 0:
+                        self.principal_usd -= amort
+                        self.amortized_usd += amort
+                    self._log("amortize", idx, amort_usd=amort, new_principal_usd=self.principal_usd,
+                              ltv=self.principal_usd / (price * self.collateral_coin_amt))
+                    # continuar activo
+                    continue
+
+                # 2.c) Ignorar → buscar liquidación
                 lo2, hi2 = idx, n
                 while lo2 + 1 < hi2:
                     mid2 = (lo2 + hi2) // 2
-                    hi2  = mid2 if self.tree.range_min(idx, mid2 + 1)[0] < lq_p else hi2
-                    lo2  = mid2 if self.tree.range_min(idx, mid2 + 1)[0] >= lq_p else lo2
+                    mn2, _ = self.tree.range_min(idx, mid2 + 1)
+                    if mn2 < lq_p:
+                        hi2 = mid2
+                    else:
+                        lo2 = mid2
                 lq = hi2 if hi2 < n else idx
 
-                self.accrued_interest += self.principal_usd * self.rate * (lq - idx) / 525_600
-                idx = lq
-                self.end_idx = idx
-                price = close[idx]
+                # Interés hasta liquidación
+                minutes2 = max(lq - idx, 0)
+                self.accrued_interest += self.principal_usd * self.rate * (minutes2 / MINUTES_PER_YEAR)
+                idx = lq; self.end_idx = idx; price = close[idx]
 
+                # Liquidación de colateral
                 coll_val      = price * self.collateral_coin_amt
                 self.liq_fee  = coll_val * CONFIG["LIQUIDATION_FEE_RATE"]
-                self.liq_rec  = max(coll_val - self.liq_fee, 0)
-                self.shortfall = max(self.principal_usd - self.liq_rec, 0)
-                self.interest_usd += self.accrued_interest
-                self.status = ("liquidated_full" if self.shortfall == 0
-                               else "liquidated_shortfall")
+                self.liq_rec  = max(coll_val - self.liq_fee, 0.0)
+                self.shortfall = max(self.principal_usd - self.liq_rec, 0.0)
+                # Consumar interés devengado
+                self.interest_usd += self.accrued_interest; self.accrued_interest = 0.0
+
+                self.status = ("liquidated_full" if self.shortfall == 0.0 else "liquidated_shortfall")
+                self._log("liquidate", idx, price=price, liq_fee=self.liq_fee, liq_rec=self.liq_rec,
+                          shortfall=self.shortfall, status=self.status)
                 break
 
             # ── Caso 3: final de datos ─────────────────────────────
-            self.interest_usd += self.accrued_interest
+            self.interest_usd += self.accrued_interest; self.accrued_interest = 0.0
             self.status = "repaid_end_of_data"
+            self._log("close_eod", idx, interest_usd=self.interest_usd)
             break
 
-        # ── Cerrar la posición rehypotecada ─────────────────────────
-        self.reh.sell_all(close[self.end_idx])
-        init_reh   = self.principal_usd / self.init_ltv * self.reh_f
-        self.reh_gain = self.reh.value(close[self.end_idx]) - init_reh
-
-        cash_inflow = self.interest_usd + self.liq_fee + self.liq_rec + self.reh_gain
-        net_profit  = self.interest_usd + self.liq_fee + self.reh_gain
-        duration    = self.end_idx - self.start_idx
-
-
+        # ── Totales de salida ─────────────────────────────────────────
         self.end_price = float(self.df[self.coin].values.astype(float)[self.end_idx])
         self.end_ts    = self.df.index[self.end_idx]
         collateral_coin_final = self.collateral_coin_amt
 
+        cash_inflow = self.interest_usd + self.liq_fee + self.liq_rec
+        brute_profit = self.interest_usd + self.liq_fee
+        duration = self.end_idx - self.start_idx
 
-
-        return {
+        out: Dict[str, Any] = {
             "loan_id":              self.loan_id,
             "principal_mxn":        self.principal_mxn,
             "principal_usd":        round(self.principal_usd, 2),
             "coin":                 self.coin,
-            "rehypo_frac":          self.reh_f,
+            "rehypo_frac":          0.0,  # compatibilidad
             "status":               self.status,
             "margin_calls":         self.margin_calls,
             "duration_days":        round(duration / 1_440, 2),
             "interest_usd":         round(self.interest_usd, 2),
             "liquidation_fee_usd":  round(self.liq_fee, 2),
             "liquidation_rec_usd":  round(self.liq_rec, 2),
-            "rehypo_gain_usd":      round(self.reh_gain, 2),
-            "cash_inflow_usd":      round(cash_inflow, 2),  # antes revenue_usd
-            "net_profit_usd":       round(net_profit, 2),
-            "shortfall_usd":        round(self.shortfall, 2), 
-            "start_ts": self.start_ts,
-            "end_ts":   self.end_ts,
-            "start_price": self.start_price,
-            "end_price":   self.end_price,
-            "init_ltv":        round(self.init_ltv, 4),
-            "mc_ltv":          round(self.mc_ltv, 4),
-            "liq_ltv":         round(self.lq_ltv, 4),
+            "cash_inflow_usd":      round(cash_inflow, 2),
+            "brute_profit_usd":     round(brute_profit, 2),
+            "shortfall_usd":        round(self.shortfall, 2),
+            "amortized_usd":        round(self.amortized_usd, 2),
+            "start_ts":             self.start_ts,
+            "end_ts":               self.end_ts,
+            "start_price":          self.start_price,
+            "end_price":            self.end_price,
+            "init_ltv":             round(self.init_ltv, 4),
+            "mc_ltv":               round(self.mc_ltv, 4),
+            "liq_ltv":              round(self.liq_ltv, 4),
             "collateral_btc_init_total": round(self.initial_total_collateral_coins, 10),
-            "collateral_btc_final":      round(collateral_coin_final, 10)
+            "collateral_btc_final":       round(collateral_coin_final, 10),
         }
 
+        if CONFIG.get("LOG_EVENTS", False):
+            out["events"] = self.events
+        return out
 
-# ── Creation helper & simulate_portfolio ─────────────────────────────────
+# ── Simulación de portafolio ────────────────────────────────────────────────
 
-
-def _create_loan(lid, coin, df, tree, starts, sig):
+def _create_loan(lid: int, coin: str, df: pd.DataFrame, tree: SegmentTree, starts: List[int]):
     amt = random.choices(CONFIG["LOAN_SIZES_MXN"], weights=CONFIG["SIZE_WEIGHTS"], k=1)[0]
     st = random.choice(starts)
-    return Loan(lid, coin, amt, st, df, tree, sig)
+    return Loan(lid, coin, amt, st, df, tree)
 
-def simulate_portfolio():
-    df   = load_price_df(CONFIG["PRICE_CSV"])
-    logs: List[Dict] = []
+
+def simulate_portfolio() -> Tuple[List[Dict[str, Any]], pd.DataFrame]:
+    """Devuelve (registros_por_prestamo, summary_df)."""
+    df   = load_price_df(CONFIG["PRICE_CSV"])  # index: datetime, cols: BTC, ETH
+    records: List[Dict[str, Any]] = []
 
     for coin in ("BTC", "ETH"):
-        sig       = build_signals(df, coin)
         arr, _    = align_series(df, coin)
         tree      = SegmentTree(arr.tolist())
 
-        horizon   = 525_600                      # minutos ≈ 1 año
-        starts    = list(range(len(arr) - horizon - 1))
+        horizon   = MINUTES_PER_YEAR
+        starts    = list(range(max(len(arr) - horizon - 1, 1)))
         per_coin  = CONFIG["N_LOANS"] // 2
 
         for _ in range(per_coin):
-            principal = random.choices(
-                CONFIG["LOAN_SIZES_MXN"],
-                weights=CONFIG["SIZE_WEIGHTS"],
-                k=1
-            )[0]
-            st   = random.choice(starts)
-            loan = Loan(len(logs) + 1, coin, principal, st, df, tree, sig)
-            logs.append(loan.run())
+            loan = _create_loan(len(records) + 1, coin, df, tree, starts)
+            records.append(loan.run())
 
-    return logs, pd.DataFrame(logs)
+    return records, pd.DataFrame(records)
 
+# ── Post‑hoc: rehípoteca fuera del core (opcional) ──────────────────────────
 
-# ─────────────────────────────────────────────────────────────────────────────
-# ROI helper
-# ─────────────────────────────────────────────────────────────────────────────
+def rehypo_backtest_from_logs(results_df: pd.DataFrame, price_df: pd.DataFrame,
+                              rehypo_frac: float = 0.1) -> pd.DataFrame:
+    """
+    Ejemplo mínimo de evaluación post‑hoc de rehípoteca **fuera** del simulador.
+    Para cada préstamo, invierte `rehypo_frac` del *valor del colateral inicial*
+    en buy‑and‑hold desde `start_ts` hasta `end_ts` y reporta PnL.
 
-def _set_seed(s:int):
-    random.seed(s); np.random.seed(s)
+    NOTA: Este es un baseline (sin intradía, sin señales). Reemplaza por la
+    estrategia deseada si necesitas explotar la trayectoria completa.
+    """
+    if not {"start_ts", "end_ts", "coin", "collateral_btc_init_total"}.issubset(results_df.columns):
+        raise ValueError("results_df missing required columns for rehypo backtest")
 
-def evaluate_loan_sizes(runs:int=10, loans_per_run:int=100,
-                        custodian_rate:float=0.004, base_seed:int=1234) -> pd.DataFrame:
-    import pandas as pd
-    res = []; origN = CONFIG["N_LOANS"]
-    for r in range(runs):
-        CONFIG["N_LOANS"] = loans_per_run; _set_seed(base_seed + r)
-        _, df = simulate_portfolio()
-        # costo de custodia sobre colateral inicial (plataforma)
-        df["custody_fee_usd"] = (df["principal_usd"] / df["init_ltv"]) * custodian_rate
-        # ingreso neto plataforma = net_profit_usd - costos de custodia
-        df["net_income_usd"] = df["net_profit_usd"] - df["custody_fee_usd"]
-        df["roi_pct"] = df["net_income_usd"] / df["principal_usd"] * 100
-        res.append(df[["principal_mxn","net_income_usd","roi_pct"]])
-    CONFIG["N_LOANS"] = origN
-    full = pd.concat(res, ignore_index=True)
+    def _pnl_row(r: pd.Series) -> float:
+        s, e = pd.Timestamp(r.start_ts), pd.Timestamp(r.end_ts)
+        s_i = pad_loc(price_df.index, s)
+        e_i = pad_loc(price_df.index, e)
+        p0 = float(price_df.loc[price_df.index[s_i], r.coin])
+        p1 = float(price_df.loc[price_df.index[e_i], r.coin])
+        init_val = r.collateral_btc_init_total * rehypo_frac * p0
+        final_val = r.collateral_btc_init_total * rehypo_frac * p1
+        return final_val - init_val
+
+    out = results_df.copy()
+    out["rehypo_backtest_gain_usd"] = out.apply(_pnl_row, axis=1)
+    return out
+
+# ── Utilidad: comparación préstamo vs vender (lado cliente) ─────────────────
+
+def compare_loan_vs_sell(results_df: pd.DataFrame) -> pd.DataFrame:
+    need = [
+        "coin", "status", "principal_usd", "interest_usd", "shortfall_usd",
+        "start_price", "end_price", "collateral_btc_init_total", "rehypo_frac",
+    ]
+    for c in need:
+        if c not in results_df.columns:
+            raise ValueError(f"Falta columna requerida: {c}")
+
+    df = results_df.copy()
+
+    # Baseline: vender al inicio para obtener el principal
+    df["btc_sold_baseline"] = df["principal_usd"] / df["start_price"]
+
+    # BTC vendidos con préstamo (visión cliente)
+    def btc_sold_with_loan(r: pd.Series) -> float:
+        status = str(r["status"])
+        if status.startswith("repaid"):  # repaid_maturity / repaid_end_of_data
+            return (r["principal_usd"] + r["interest_usd"]) / r["end_price"]
+        # Liquidación: se pierde el colateral inicial; si hay shortfall, vende extra al final
+        sold = r["collateral_btc_init_total"]
+        if r.get("shortfall_usd", 0) > 1e-9:
+            sold += r["shortfall_usd"] / r["end_price"]
+        return float(sold)
+
+    df["btc_sold_loan"] = df.apply(btc_sold_with_loan, axis=1)
+    df["delta_btc_saved"] = df["btc_sold_baseline"] - df["btc_sold_loan"]  # >0 conviene pedir
+
+    # (opcional) aislar casos sin rehypo para medir el puro efecto “préstamo”
+    if "rehypo_frac" in df.columns:
+        df = df.query("rehypo_frac == 0.0").copy()
+
     return (
-        full.groupby("principal_mxn")
-            .agg(mean_net_income_usd=("net_income_usd","mean"),
-                 std_net_income_usd=("net_income_usd","std"),
-                 mean_roi_pct=("roi_pct","mean"),
-                 std_roi_pct=("roi_pct","std"))
-            .sort_index()
-    )
+        df.groupby(["coin", "status"], as_index=False)
+          .agg(loans=("delta_btc_saved", "size"),
+               mean_delta_btc=("delta_btc_saved", "mean"),
+               p50_delta_btc=("delta_btc_saved", "median"),
+               p10=("delta_btc_saved", lambda s: s.quantile(0.10)),
+               p90=("delta_btc_saved", lambda s: s.quantile(0.90)),
+               neg_share=("delta_btc_saved", lambda s: (s < 0).mean()))
+          .sort_values(["coin", "status"]))
