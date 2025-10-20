@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+
+# Entornos / credenciales
+.venv/
+env/
+venv/
+.env
+
+# Notebooks y pruebas
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editores / OS
+.DS_Store
+.vscode/
+
+# Datos locales (ajusta a tu estructura)
+data/
+*.csv
+*.parquet
+*.feather
+
+# (opcional) permitir un sample chico versionado:
+!data/sample.csv
