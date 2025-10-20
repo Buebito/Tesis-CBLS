@@ -33,7 +33,7 @@ CONFIG: Dict[str, Any] = {
     "LOAN_SIZES_MXN": [200_000, 500_000, 750_000, 1_000_000, 1_250_000, 1_500_000, 1_750_000, 2_000_000],
     "SIZE_WEIGHTS":   [1]*8,  # uniformes; editar si se desea
     # datos de precios
-    "PRICE_CSV":      "prices.csv",  # columnas esperadas: date,BTC,ETH (minutales)
+    "PRICE_CSV":      "data/processed/prices.csv",  # columnas esperadas: date,BTC,ETH (minutales)
     # simulación
     "N_LOANS":        10_000,
     "SEED":           42,
