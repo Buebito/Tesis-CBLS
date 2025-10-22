@@ -3,7 +3,11 @@ Simulaciones de Crypto Backed Loans
 
 Se utilizan precios históricos de BTC y ETH para simular el desempeño de un préstamo a lo largo del tiempo.
 
-# ¿Cómo Correr?
+Tenemos 2 folders principales: Simulacion de Préstamos a lo Largo del tiempo y Bolsa de Volatilidad, uno diseñado para simular muchísimos préstamos a lo largo de tiempo utilizando segment tree, para ver su desempeño y ganancia para el prestamista, y el otro diseñado para encontrar el préstamo óptimo de crypto que permita una diración indefinida de este, respectivamente. 
+
+# ¿Cómo Correr Simulaciones? 
+
+En La carpeta simulaciones
 
 1. Primero corremos el notebook create_data.ipynb
 
@@ -21,3 +25,5 @@ Guarda precio inicial de la moneda y realiza un análisis de si es mejor tomar e
 También tiene la opción de rehipoteca, para ver si con estrategias de trading podemos rehipotecar el colateral y generar mayor ganancia (aun no funciona correctamente)
 
 Hay un log_model que utiliza la logvolatilidad de las cryptomonedas 
+
+# ¿Cómo correr Bolsa Volatilidad?
