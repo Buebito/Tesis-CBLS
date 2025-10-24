@@ -210,7 +210,7 @@ def compute_required_buffer_distribution(
 
     out = pd.DataFrame(
         {
-            "start_ts": starts_ts,
+            "fecha_inicio": starts_ts,
             "p0": p0s,
             "pmin": pmins,
             "buffer_pct_of_init_collateral": buf_pct,
