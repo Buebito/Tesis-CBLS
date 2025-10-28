@@ -56,7 +56,7 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 
 def load_price_df(path: str) -> pd.DataFrame:
-    """Carga `prices.csv` con columna 'date' y columnas de precio por coin.
+    """Carga `historic_prices.csv` con columna 'date' y columnas de precio por coin.
     Devuelve DataFrame con índice datetime ascendente.
     """
     df = pd.read_csv(path, parse_dates=["date"]).set_index("date").sort_index()
@@ -295,7 +295,7 @@ if __name__ == "__main__":
     import argparse
 
     ap = argparse.ArgumentParser(description="Volatility Buffer Optimizer (cliente)")
-    ap.add_argument("--prices", type=str, default="prices.csv", help="Ruta a CSV de precios")
+    ap.add_argument("--prices", type=str, default="historic_prices.csv", help="Ruta a CSV de precios")
     ap.add_argument("--coin", type=str, default="BTC", help="Columna de precio a usar")
     ap.add_argument("--init-ltv", type=float, default=0.50)
     ap.add_argument("--liq-ltv", type=float, default=0.80)
