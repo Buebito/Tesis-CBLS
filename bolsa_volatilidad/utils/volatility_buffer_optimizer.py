@@ -214,7 +214,7 @@ def compute_required_buffer_distribution(
             "p0": p0s,
             "pmin": pmins,
             "buffer_pct_of_init_collateral": buf_pct,
-            "buffer_coins": buf_coins,
+            #"buffer_coins": buf_coins,
             "buffer_usd_at_p0": buf_usd_p0,
         }
     )
@@ -287,36 +287,3 @@ def summarize_for_coin(
         "buffer_usd_at_p0@q": float(usd90_at_p0),
         "n_starts": int(len(dist)),
     }
-
-# ---------------------------------------------------------------------------
-# Ejemplo de uso (CLI)
-# ---------------------------------------------------------------------------
-if __name__ == "__main__":
-    import argparse
-
-    ap = argparse.ArgumentParser(description="Volatility Buffer Optimizer (cliente)")
-    ap.add_argument("--prices", type=str, default="historic_prices.csv", help="Ruta a CSV de precios")
-    ap.add_argument("--coin", type=str, default="BTC", help="Columna de precio a usar")
-    ap.add_argument("--init-ltv", type=float, default=0.50)
-    ap.add_argument("--liq-ltv", type=float, default=0.80)
-    ap.add_argument("--principal-usd", type=float, default=10_000.0)
-    ap.add_argument("--mode", type=str, choices=["end", "window"], default="window")
-    ap.add_argument("--window-minutes", type=int, default=525_600, help="Ventana en minutos (si mode=window)")
-    ap.add_argument("--start-stride", type=int, default=60, help="Muestreo de fechas de inicio (min)")
-    ap.add_argument("--target-q", type=float, default=0.90, help="Cuantil objetivo (e.g., 0.90)")
-    args = ap.parse_args()
-
-    df = load_price_df(args.prices)
-    summary = summarize_for_coin(
-        df, args.coin,
-        init_ltv=args.init_ltv,
-        liq_ltv=args.liq_ltv,
-        principal_usd=args.principal_usd,
-        mode=args.mode,
-        window_minutes=args.window_minutes,
-        start_stride=args.start_stride,
-        target_q=args.target_q,
-    )
-    print("Resumen:")
-    for k, v in summary.items():
-        print(f"  {k}: {v}")

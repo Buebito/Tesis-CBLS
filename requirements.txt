@@ -1,3 +1,26 @@
+# Core numérico / dataframes
 numpy>=1.26.4,<2.0
 pandas>=2.2.2,<3.0
-ta>=0.10.2
+scipy>=1.11.0,<2.0
+
+# Análisis técnico
+ta>=0.10.2,<0.11
+
+# Simulaciones y estimación de densidad
+KDEpy>=1.1.8,<2.0
+
+# Visualización / análisis exploratorio
+matplotlib>=3.8.0,<4.0
+seaborn>=0.13.0,<0.14.0
+
+# Progreso / manejo de fechas
+tqdm>=4.66.0,<5.0
+python-dateutil>=2.9.0,<3.0
+
+# Notebooks / entorno interactivo
+ipykernel>=6.29.0,<7.0
+jupyterlab>=4.2.0,<5.0
+notebook>=7.2.0,<8.0   # compat con ipywidgets 8.x
+
+# Widgets interactivos en notebooks
+ipywidgets>=8.1.0,<9.0
