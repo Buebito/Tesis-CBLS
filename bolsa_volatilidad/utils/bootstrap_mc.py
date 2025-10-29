@@ -356,3 +356,63 @@ def run_future_price_simulation(
     risk_summary = mc.summarize_risk(price_paths)
 
     return price_paths, risk_summary
+
+
+def extract_scenario_series(price_paths: pd.DataFrame,
+                            hist_index: pd.DatetimeIndex,
+                            pessimistic_q: float = 5,
+                            base_q: float = 50,
+                            optimistic_q: float = 95) -> dict:
+    """
+    Convierte el cubo Monte Carlo (price_paths) en 3 trayectorias únicas:
+    - pesimista (pessimistic_q)
+    - base (base_q)
+    - optimista (optimistic_q)
+
+    price_paths: DataFrame (steps_futuros x n_sims)
+    hist_index: índice datetime del histórico original ya resampleado
+                (lo usamos para inferir timestamp base y frecuencia)
+
+    Return:
+        {
+          "pessimistic": pd.Series(...),
+          "base": pd.Series(...),
+          "optimistic": pd.Series(...)
+        }
+        Todas con un DatetimeIndex futuro.
+    """
+
+    # 1. Percentiles por fila (es decir, en cada paso futuro)
+    # describe() necesita los percentiles como decimales [0-1]
+    qs = [pessimistic_q/100.0, base_q/100.0, optimistic_q/100.0]
+    desc = price_paths.T.describe(percentiles=qs)
+
+    # Pandas etiqueta esos percentiles como "5%", "50%", etc.
+    pess_key = f"{pessimistic_q}%"
+    base_key = f"{base_q}%"
+    opt_key = f"{optimistic_q}%"
+
+    pess_path = desc.loc[pess_key].values  # array largo T+1
+    base_path = desc.loc[base_key].values
+    opt_path  = desc.loc[opt_key].values
+
+    # 2. Construir índice futuro:
+    #    - último timestamp histórico como punto inicial
+    #    - frecuencia = mediana del delta histórico
+    last_ts = hist_index[-1]
+    freq = hist_index.to_series().diff().dropna().median()
+
+    future_index = pd.date_range(
+        start=last_ts,
+        periods=price_paths.shape[0],  # mismo largo que las trayectorias
+        freq=freq
+    )
+
+    # 3. Regresar como Series con índice temporal
+    scenarios = {
+        "pessimistic": pd.Series(pess_path, index=future_index, name="price"),
+        "base":        pd.Series(base_path, index=future_index, name="price"),
+        "optimistic":  pd.Series(opt_path, index=future_index, name="price"),
+    }
+
+    return scenarios
