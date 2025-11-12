@@ -19,7 +19,28 @@ Este módulo está pensado para integrarse con el motor de riesgo
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from typing import Literal, Dict
+from typing import Literal, Dict, Optional
+from dataclasses import dataclass
+
+#------------------------------------------------------------
+# Configuración de sesgos en el muestreo bootstrap
+#------------------------------------------------------------
+
+@dataclass
+class BiasConfig:
+    # 1) Drift
+    use_log_returns: bool = True            # usar log-retornos (recomendado)
+    drift_mode: Literal["none","zero","shift"] = "zero"
+    mu_shift_per_step: float = 0.0          # solo si drift_mode == "shift" (negativo para sesgo bajista)
+
+    # 2) Tilt de muestreo (reponderar histórico)
+    tilt_theta: Optional[float] = None      # e.g. -4.0 (más peso a retornos negativos)
+
+    # 3) Transformación asimétrica + winsor
+    pos_scale: float = 1.0                  # <1 encoge subidas
+    neg_scale: float = 1.0                  # >1 amplifica bajadas
+    clip_pos_q: Optional[float] = None      # e.g. 0.995 capea cola positiva
+    clip_neg_q: Optional[float] = None      # opcional, por si quisieras capear cola negativa también
 
 
 # ------------------------------------------------------------
@@ -54,19 +75,65 @@ def _silverman_bandwidth(x: np.ndarray) -> float:
 
 class KDEBootstrapSampler:
     """
-    Toma una serie de retornos y permite muestrear nuevos retornos sintéticos:
-    - Elige retornos históricos con reemplazo
-    - Les agrega ruido ~ N(0, h^2) donde h viene de Silverman
+    Bootstrap+KDE con opciones de:
+    - tilt (pondera más retornos negativos: theta<0)
+    - winsorización de colas
+    - escalado asimétrico (pos_scale / neg_scale)
     """
-    def __init__(self, returns: pd.Series):
+    def __init__(self, returns: pd.Series, bias: Optional[BiasConfig] = None):
         clean = returns.dropna().astype(float).values
         self.returns = clean
+        self.bias = bias or BiasConfig()
         self.kernel_std = _silverman_bandwidth(clean)
 
+        # Precalcular umbrales para winsor (sobre histórico)
+        if self.bias.clip_pos_q is not None:
+            pos = self.returns[self.returns > 0]
+            self.pos_clip_val = np.quantile(pos, self.bias.clip_pos_q) if len(pos)>0 else None
+        else:
+            self.pos_clip_val = None
+
+        if self.bias.clip_neg_q is not None:
+            neg = self.returns[self.returns < 0]
+            self.neg_clip_val = np.quantile(neg, 1.0 - self.bias.clip_neg_q) if len(neg)>0 else None
+        else:
+            self.neg_clip_val = None
+
+        # Probabilidades con tilt (suaviza con softmax)
+        self.probs = None
+        if self.bias.tilt_theta is not None and np.isfinite(self.bias.tilt_theta):
+            # softmax(theta * r) estable
+            scores = self.bias.tilt_theta * self.returns
+            scores = scores - np.max(scores)
+            w = np.exp(scores)
+            self.probs = w / w.sum()
+
+    def _apply_winsor_and_scale(self, r: np.ndarray) -> np.ndarray:
+        # winsor positivo
+        if self.pos_clip_val is not None:
+            r = np.where(r > self.pos_clip_val, self.pos_clip_val, r)
+        # winsor negativo (opcional)
+        if self.neg_clip_val is not None:
+            r = np.where(r < self.neg_clip_val, self.neg_clip_val, r)
+        # escalado asimétrico
+        if self.bias.pos_scale != 1.0 or self.bias.neg_scale != 1.0:
+            r = np.where(r >= 0.0, r * self.bias.pos_scale, r * self.bias.neg_scale)
+        return r
+
     def sample(self, size: int) -> np.ndarray:
-        base = np.random.choice(self.returns, size=size, replace=True)
+        base = np.random.choice(self.returns, size=size, replace=True, p=self.probs)
         noise = np.random.normal(loc=0.0, scale=self.kernel_std, size=size)
-        return base + noise
+        r = base + noise
+        r = self._apply_winsor_and_scale(r)
+
+        # Drift adjustments (para log o pct lo tratamos igual, es por-step)
+        if self.bias.drift_mode == "zero":
+            r = r - np.mean(self.returns)      # re-centra a 0 el retorno esperado
+        elif self.bias.drift_mode == "shift" and self.bias.mu_shift_per_step != 0.0:
+            r = r + self.bias.mu_shift_per_step  # permite sesgo bajista controlado
+
+        return r
+
 
 
 # ------------------------------------------------------------
@@ -74,61 +141,36 @@ class KDEBootstrapSampler:
 # ------------------------------------------------------------
 
 class MonteCarloPriceSimulator:
-    """
-    Genera trayectorias de precio futuro asumiendo que:
-    - Los retornos porcentuales paso a paso son i.i.d.
-    - Cada retorno futuro luce como 'un retorno histórico + ruidito KDE'
-
-    Importante:
-    * La resolución temporal del paso simulado es la MISMA que uses
-      en `price_series`. Si price_series es por hora -> cada step ~1 hora.
-    """
-
-    def __init__(self, price_series: pd.Series, n_sims: int = 2000):
-        """
-        price_series: Serie de precios (index = timestamps ordenados ASC)
-        n_sims: número de trayectorias independientes a simular
-        """
-        # Ordenar, limpiar
+    def __init__(self, price_series: pd.Series, n_sims: int = 2000, bias: Optional[BiasConfig] = None):
         self.price_series = price_series.sort_index().astype(float)
-        # Rendimientos relativos paso a paso
-        self.returns = self.price_series.pct_change().dropna()
-        # Sampler bootstrap+KDE sobre retornos
-        self.sampler = KDEBootstrapSampler(self.returns)
-        # Precio inicial = último precio real conocido
+        self.bias = bias or BiasConfig()
+
+        if self.bias.use_log_returns:
+            self.returns = np.log(self.price_series).diff().dropna()   # log-retornos
+        else:
+            self.returns = self.price_series.pct_change().dropna()     # pct returns
+
+        self.sampler = KDEBootstrapSampler(self.returns, bias=self.bias)
         self.start_price = float(self.price_series.iloc[-1])
         self.n_sims = n_sims
 
     def simulate_paths(self, horizon_steps: int) -> pd.DataFrame:
-        """
-        Genera 'n_sims' trayectorias de longitud 'horizon_steps'.
-
-        Devuelve:
-            DataFrame shape = (horizon_steps+1, n_sims)
-            - fila 0 = precio inicial (repetido)
-            - filas siguientes = evolución simulada
-        """
-        # 1. Muestra retornos sintéticos
         total_needed = horizon_steps * self.n_sims
-        sampled_returns = self.sampler.sample(total_needed)  # array plano
-        sampled_returns = sampled_returns.reshape(horizon_steps, self.n_sims)
+        sampled = self.sampler.sample(total_needed).reshape(horizon_steps, self.n_sims)
 
-        # 2. Convierte retornos porcentuales a factores multiplicativos
-        #    r=0.01 -> factor=1.01
-        factors = sampled_returns + 1.0  # shape (steps, sims)
+        if self.bias.use_log_returns:
+            # factors = exp(r_log)
+            factors = np.exp(sampled)
+        else:
+            # factors = 1 + r_pct
+            factors = sampled + 1.0
 
-        # 3. Creamos DataFrame de factores
         factors_df = pd.DataFrame(factors)
-
-        # 4. Insertamos fila inicial de "1.0" (identidad multiplicativa)
         factors_df.loc[-1] = 1.0
-        factors_df = factors_df.sort_index()  # ahora -1,0,1,... => 0,1,2,...
-
-        # 5. Hacemos producto acumulado columna a columna y escalamos
+        factors_df = factors_df.sort_index()
         price_paths = self.start_price * factors_df.cumprod()
-        price_paths.index = range(price_paths.shape[0])  # limpiar índice
+        price_paths.index = range(price_paths.shape[0])
         price_paths.index.name = "step"
-
         return price_paths
 
     # --------- Plots de diagnóstico ---------
@@ -312,6 +354,7 @@ def run_future_price_simulation(
     n_sims: int = 2000,
     resample_rule: str = "1H",
     do_plots: bool = True,
+    bias: Optional[BiasConfig] = None,
 ):
     """
     Función de alto nivel:
@@ -331,28 +374,17 @@ def run_future_price_simulation(
             resample_rule="1H",
         )
     """
-
-    # 1. cargar serie del activo
-    series = load_price_series(
-        csv_path=csv_path,
-        asset_col=asset_col,
-        resample_rule=resample_rule,
-    )
-
-    # 2. inferir pasos necesarios para horizon_days
+    series = load_price_series(csv_path=csv_path, asset_col=asset_col, resample_rule=resample_rule)
     horizon_steps = infer_horizon_steps(series, horizon_days=horizon_days)
 
-    # 3. armar simulador y correrlo
-    mc = MonteCarloPriceSimulator(series, n_sims=n_sims)
+    mc = MonteCarloPriceSimulator(series, n_sims=n_sims, bias=bias)
     price_paths = mc.simulate_paths(horizon_steps=horizon_steps)
 
-    # 4. plots
     if do_plots:
         mc.plot_paths(price_paths)
         mc.plot_percentiles(price_paths)
         mc.plot_terminal_hist(price_paths)
 
-    # 5. resumen de riesgo
     risk_summary = mc.summarize_risk(price_paths)
 
     return price_paths, risk_summary
