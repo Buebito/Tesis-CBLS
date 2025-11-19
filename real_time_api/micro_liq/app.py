@@ -3,279 +3,374 @@ import time
 from datetime import datetime
 
 LTV_OBJETIVO = 0.50
-LIQUIDATION_FEE = 0.02       # 2%
-TASA_ANUAL = 0.18            # 18% anual
-BUFFER_LIQUIDACION_MIN = 0.05  # 5% del colateral adicional inicial
+MARGIN_CALL_LTV = 0.72
+LIQUIDATION_LTV = 0.80
+LIQUIDATION_FEE = 0.02  # 2% sobre el valor del colateral liquidado
+
+UPDATE_INTERVAL_SEC = 3  # cada cuánto se actualiza el préstamo en "tiempo real"
+
 
 def obtener_precios():
-    url = 'https://api.binance.com/api/v3/ticker/price'
-    res = requests.get(url)
+    url = "https://api.binance.com/api/v3/ticker/price"
+    res = requests.get(url, timeout=10)
     data = res.json()
-    precios = {'BTC': None, 'ETH': None}
+    precios = {"BTC": None, "ETH": None}
     for entry in data:
-        if entry['symbol'] == 'BTCUSDT':
-            precios['BTC'] = float(entry['price'])
-        elif entry['symbol'] == 'ETHUSDT':
-            precios['ETH'] = float(entry['price'])
+        if entry["symbol"] == "BTCUSDT":
+            precios["BTC"] = float(entry["price"])
+        elif entry["symbol"] == "ETHUSDT":
+            precios["ETH"] = float(entry["price"])
     return precios
 
-class Prestamo:
-    def __init__(self, token, cantidad_prestamo, colateral, buffer_pct=0.0):
-        self.token = token.upper()
-        self.cantidad_prestamo = float(cantidad_prestamo)  # principal vivo
-        self.colateral = float(colateral)                  # unidades de token
-        self.buffer_pct = float(buffer_pct)
 
-        self.precios = obtener_precios()
-        self.precio_inicial = self.precios[self.token]
+class Prestamo:
+    def __init__(self, token, cantidad_prestamo_usd, colateral_unidades, colateral_minimo_unidades):
+        self.token = token.upper()
+        self.cantidad_prestamo = float(cantidad_prestamo_usd)  # principal vivo en USD
+        self.colateral = float(colateral_unidades)             # unidades de token (BTC/ETH)
+        self.colateral_minimo = float(colateral_minimo_unidades)
         self.fecha_inicio = datetime.now()
 
-        # Colateral mínimo para un LTV del 50%
-        self.colateral_minimo = self.cantidad_prestamo / (LTV_OBJETIVO * self.precio_inicial)
-
-        # Particionamos: base + extra
+        # estado de buffer (colateral adicional sobre el mínimo requerido)
         self.base_colateral = min(self.colateral, self.colateral_minimo)
         self.extra_colateral = max(0.0, self.colateral - self.base_colateral)
         self.extra_colateral_inicial = self.extra_colateral
 
-        if self.colateral < self.colateral_minimo:
-            print("⚠️ Ojo: el colateral aportado es menor al mínimo para 50% LTV.")
-            print(f"Colateral mínimo requerido: {self.colateral_minimo:.6f} {self.token}")
+        # thresholds de "buffer call" cada 10% consumido: 90%, 80%, ..., 10%
+        self.siguiente_buffer_threshold = 0.9
 
-        colateral_usd = self.colateral * self.precio_inicial
-        self.LTV_actual = self.cantidad_prestamo / colateral_usd
-        print(f"LTV Inicial: {self.LTV_actual:.2%}")
-        print(f"Base colateral: {self.base_colateral:.6f} {self.token}, "
-              f"Colateral adicional: {self.extra_colateral:.6f} {self.token}")
-
-    def calcular_interes(self):
-        dias = (datetime.now() - self.fecha_inicio).days
-        interes = self.cantidad_prestamo * TASA_ANUAL * dias / 365
-        return interes
-
-    def actualizar_LTV(self):
+        # primer cálculo de precios / LTV real
         self.precios = obtener_precios()
-        precio_actual = self.precios[self.token]
-        colateral_usd = self.colateral * precio_actual
-        if colateral_usd <= 0:
-            self.LTV_actual = float('inf')
-        else:
-            self.LTV_actual = self.cantidad_prestamo / colateral_usd
-        interes = self.calcular_interes()
-        print(f"LTV Actualizado: {self.LTV_actual:.2%} | "
-              f"Precio actual de {self.token}: ${precio_actual:,.2f} USD | "
-              f"Interés acumulado: ${interes:.2f}")
-        return self.LTV_actual
+        precio_inicial = self.precios[self.token]
+        colateral_usd = self.colateral * precio_inicial
+        self.LTV_actual = self.cantidad_prestamo / colateral_usd if colateral_usd > 0 else float("inf")
 
-    def agregar_colateral(self, cantidad):
-        cantidad = float(cantidad)
-        self.colateral += cantidad
+        buffer_pct_ini = self._porcentaje_buffer_restante()
 
-        # Repartimos nuevamente entre base y extra
-        if self.colateral <= self.colateral_minimo:
-            self.base_colateral = self.colateral
-            self.extra_colateral = 0.0
-        else:
-            self.base_colateral = self.colateral_minimo
-            self.extra_colateral = self.colateral - self.base_colateral
+        print("\n=== Préstamo creado ===")
+        print(f"Token colateral: {self.token}")
+        print(f"Monto préstamo: ${self.cantidad_prestamo:,.2f} USD")
+        print(f"Colateral total: {self.colateral:.6f} {self.token}")
+        print(f"Colateral mínimo (50% LTV): {self.colateral_minimo:.6f} {self.token}")
+        print(f"Colateral base: {self.base_colateral:.6f} {self.token}")
+        print(f"Colateral adicional (buffer): {self.extra_colateral:.6f} {self.token} "
+              f"({buffer_pct_ini:.2%} del buffer inicial)")
+        print(f"LTV contractual: {LTV_OBJETIVO:.2%} (basado en 50%)")
+        print(f"LTV efectivo inicial: {self.LTV_actual:.2%}\n")
 
-        # Si el usuario agrega más buffer, actualizamos el "máximo histórico"
-        if self.extra_colateral > self.extra_colateral_inicial:
-            self.extra_colateral_inicial = self.extra_colateral
-
-        print(f"Nuevo colateral total: {self.colateral:.6f} {self.token}")
-        print(f"Base colateral: {self.base_colateral:.6f} {self.token}, "
-              f"Colateral adicional: {self.extra_colateral:.6f} {self.token}")
-
-    def porcentaje_buffer_restante(self):
+    # -------- utilidades de buffer --------
+    def _porcentaje_buffer_restante(self):
         if self.extra_colateral_inicial <= 0:
             return 0.0
         return self.extra_colateral / self.extra_colateral_inicial
 
-    def microventa(self):
+    def _check_buffer_calls(self, eventos):
         """
-        Ejecuta una microventa para intentar regresar el LTV al objetivo (50%)
-        usando únicamente colateral adicional. Si no hay suficiente buffer,
-        se devuelve False para que el caller decida si liquida todo.
+        Dispara eventos de tipo "buffer_call" cada vez que el buffer cruza
+        múltiplos de 10% (90%, 80%, ..., 10%).
+        """
+        if self.extra_colateral_inicial <= 0:
+            return
+
+        buffer_pct = self._porcentaje_buffer_restante()
+
+        # Emitimos todos los thresholds que se hayan cruzado en esta iteración
+        while (
+            self.siguiente_buffer_threshold is not None
+            and buffer_pct <= self.siguiente_buffer_threshold
+            and self.siguiente_buffer_threshold > 0
+        ):
+            eventos.append({
+                "type": "buffer_call",
+                "threshold": round(self.siguiente_buffer_threshold, 1),
+                "buffer_pct_remaining": buffer_pct,
+            })
+            print(
+                f"📢 Buffer call: buffer en {buffer_pct:.2%} "
+                f"(threshold {self.siguiente_buffer_threshold:.0%})"
+            )
+            self.siguiente_buffer_threshold -= 0.1
+            # Si bajamos de 0.1, dejamos de emitir calls
+            if self.siguiente_buffer_threshold <= 0:
+                self.siguiente_buffer_threshold = None
+                break
+
+    # -------- lógica principal --------
+    def actualizar_LTV(self):
+        """
+        Actualiza precios y LTV real, pero lo que se muestra al cliente
+        mientras haya buffer es LTV contractual = 50%.
+        Cuando el buffer llega a 0, se muestra el LTV real.
         """
         self.precios = obtener_precios()
-        P = self.precios[self.token]
+        precio = self.precios[self.token]
+        colateral_usd = self.colateral * precio
+
+        # LTV real (económico)
+        real_ltv = self.cantidad_prestamo / colateral_usd if colateral_usd > 0 else float("inf")
+        self.LTV_actual = real_ltv
+
+        buffer_pct = self._porcentaje_buffer_restante()
+
+        # Lo que mostramos:
+        # - Si todavía hay buffer (>0) → LTV contractual = 50%
+        # - Si buffer = 0 → mostramos LTV real
+        if buffer_pct > 0:
+            ltv_display = LTV_OBJETIVO
+        else:
+            ltv_display = real_ltv
+
+        print(
+            f"[{datetime.now().strftime('%H:%M:%S')}] "
+            f"Precio {self.token}: ${precio:,.2f} | "
+            f"Colateral: {self.colateral:.6f} {self.token} | "
+            f"LTV mostrado: {ltv_display:.2%} |"
+            #f"(LTV efectivo: {real_ltv:.2%}) | "
+            f"Buffer restante: {buffer_pct:.2%}"
+        )
+
+        return real_ltv  # devolvemos el real para la lógica de riesgo
+
+    def microventa(self, eventos):
+        """
+        Intenta llevar el LTV de vuelta a 50% usando SOLO colateral adicional.
+        Si no hay buffer, no hace nada.
+        Loguea explícitamente cuánto buffer se vendió en BTC.
+        """
+        if self.extra_colateral <= 0:
+            print("No hay buffer disponible, no se puede hacer microventa.")
+            return False
+
+        precio = self.precios[self.token]
         L = self.cantidad_prestamo
         C = self.colateral
         t = LTV_OBJETIVO
         f = LIQUIDATION_FEE
 
-        # Recalcular LTV actual
-        ltv_actual = L / (C * P)
-        if ltv_actual <= t:
-            print("LTV ya está por debajo o en el objetivo, no se requiere microventa.")
+        real_ltv = L / (C * precio) if C * precio > 0 else float("inf")
+        if real_ltv <= t:
+            print("LTV ya está en o por debajo del objetivo, no se requiere microventa.")
             return False
 
-        if self.extra_colateral <= 0:
-            print("No queda colateral adicional para microvender.")
-            return False
+        # Fórmula para x:
+        # (L - (1 - f) * x * P) / ((C - x) * P) = t
+        # x = (C*P*t - L) / (P*(f + t - 1))
+        num = C * precio * t - L
+        den = precio * (f + t - 1)
 
-        # Fórmula: encontrar x tal que
-        # (L - (1-f)*xP) / ((C - x)*P) = t
-        num = L - t * P * C
-        den = P * (1 - f - t)
-
-        if den <= 0:
-            print("No es posible calcular una microventa estable con estos parámetros.")
+        if den >= 0:
+            print("Parámetros no permiten una microventa estable (den>=0).")
             return False
 
         x_requerido = num / den
-
         if x_requerido <= 0:
-            print("El cálculo indica que no se requiere microventa.")
+            print("El cálculo indicó que no se requiere microventa.")
             return False
 
-        # Limitamos la venta al colateral adicional disponible
+        # Solo podemos vender hasta el extra_colateral disponible
         x = min(x_requerido, self.extra_colateral)
 
-        # Ejecutamos la venta
-        proceeds = x * P
+        # Ejecutamos venta
+        proceeds = x * precio
         fee = proceeds * f
         amortizacion = proceeds - fee
 
+        # IMPORTANTE: lo que se vende viene del buffer
+        buffer_vendido_btc = x
+
         self.cantidad_prestamo = max(0.0, self.cantidad_prestamo - amortizacion)
         self.colateral -= x
+
+        # Recalcular base + extra (base es siempre el mínimo)
+        self.base_colateral = min(self.colateral, self.colateral_minimo)
         self.extra_colateral = max(0.0, self.colateral - self.base_colateral)
 
-        nuevo_ltv = self.cantidad_prestamo / (self.colateral * P) if self.colateral > 0 else float('inf')
-        buffer_pct_restante = self.porcentaje_buffer_restante()
+        # Nuevo LTV real post microventa
+        colateral_usd = self.colateral * precio
+        real_ltv_nuevo = (
+            self.cantidad_prestamo / colateral_usd if colateral_usd > 0 else float("inf")
+        )
+        self.LTV_actual = real_ltv_nuevo
+
+        buffer_pct_restante = self._porcentaje_buffer_restante()
 
         print("\n🔹 Microventa ejecutada")
-        print(f"Se vendieron {x:.6f} {self.token} por ${proceeds:,.2f}")
-        print(f"Amortización del préstamo: ${amortizacion:,.2f} | Fee cobrada: ${fee:,.2f}")
-        print(f"Colateral restante: {self.colateral:.6f} {self.token}")
-        print(f"Nuevo LTV: {nuevo_ltv:.2%}")
-        print(f"Buffer de colateral restante: {buffer_pct_restante:.2%} del inicial")
+        print(f"Buffer vendido en esta microventa: {buffer_vendido_btc:.6f} {self.token}")
+        print(f"Vendidas (total): {x:.6f} {self.token} por ${proceeds:,.2f}")
+        print(f"Amortización del préstamo: ${amortizacion:,.2f} | Fee (2%): ${fee:,.2f}")
+        print(f"Nuevo colateral: {self.colateral:.6f} {self.token}")
+        print(f"Nuevo LTV efectivo: {real_ltv_nuevo:.2%}")
+        print(
+            f"Buffer restante: {self.extra_colateral:.6f} {self.token} "
+            f"({buffer_pct_restante:.2%} del inicial)\n"
+        )
+
+        eventos.append({
+            "type": "micro_sale",
+            "sold_collateral": x,
+            "buffer_sold_btc": buffer_vendido_btc,
+            "amortization": amortizacion,
+            "fee": fee,
+            "new_ltv_effective": real_ltv_nuevo,
+            "buffer_pct_remaining": buffer_pct_restante,
+        })
+
+        # Checamos si cruzamos thresholds de buffer
+        self._check_buffer_calls(eventos)
 
         return True
 
-    def liquidacion_total(self):
+    def liquidacion_total(self, motivo):
         """
-        Liquida todo el colateral restante, cobra fee de 2% sobre el valor
-        y repaga principal + interés. El resto se devuelve al usuario.
+        Liquida TODO el colateral restante, cobra fee del 2% y repaga el préstamo.
+        (sin intereses, como pediste)
         """
-        self.precios = obtener_precios()
-        P = self.precios[self.token]
-        valor_colateral = self.colateral * P
-        interes = self.calcular_interes()
+        precio = self.precios[self.token]
+        valor_colateral = self.colateral * precio
         fee = valor_colateral * LIQUIDATION_FEE
-
-        restante = valor_colateral - self.cantidad_prestamo - interes - fee
-        restante = max(0.0, restante)
-        revenue = max(0.0, interes + fee)
+        repago = min(self.cantidad_prestamo, valor_colateral - fee)
+        sobrante = max(0.0, valor_colateral - fee - repago)
 
         print("\n💥 LIQUIDACIÓN TOTAL")
-        print(f"Valor del colateral: ${valor_colateral:,.2f}")
-        print(f"Fee (2%): ${fee:,.2f}")
-        print(f"Interés cobrado: ${interes:,.2f}")
-        print(f"Devuelto al usuario: ${restante:,.2f}")
-        print(f"Revenue del prestamista: ${revenue:,.2f}")
+        print(f"Motivo: {motivo}")
+        print(f"Valor colateral: ${valor_colateral:,.2f}")
+        print(f"Fee 2%: ${fee:,.2f}")
+        print(f"Préstamo repagado: ${repago:,.2f}")
+        print(f"Devuelto al cliente: ${sobrante:,.2f}\n")
 
-        # Cerrar préstamo
+        evento = {
+            "type": "liquidation",
+            "reason": motivo,
+            "collateral_value": valor_colateral,
+            "fee": fee,
+            "repaid": repago,
+            "returned_to_user": sobrante,
+        }
+
+        # Cerramos el préstamo
         self.cantidad_prestamo = 0.0
         self.colateral = 0.0
+        self.base_colateral = 0.0
         self.extra_colateral = 0.0
 
-        return 'liquidado'
+        return evento
 
-    def evaluar_riesgos(self):
+    def tick(self):
         """
-        Lógica principal de riesgo:
-        - Actualiza LTV
-        - Si buffer < 5% → liquidación total
-        - Si LTV > objetivo → microventa
-        - Si no, préstamo en zona segura
+        Un "paso de simulación":
+        - Actualiza LTV efectivo (real)
+        - Si hay buffer y LTV efectivo > 50%, intenta microventa
+        - Luego aplica lógica de margin call / liquidación (72% / 80%)
+        Devuelve una lista de eventos sucedidos en este tick.
         """
-        ltv = self.actualizar_LTV()
-        buffer_pct_restante = self.porcentaje_buffer_restante()
+        eventos = []
+        real_ltv = self.actualizar_LTV()
 
-        # 1) Si el buffer adicional está prácticamente agotado → liquidar todo
-        if buffer_pct_restante <= BUFFER_LIQUIDACION_MIN and self.extra_colateral_inicial > 0:
-            print("\n⚠️ Colateral adicional por debajo del 5% del buffer inicial.")
-            print("Se procede a liquidar completamente el préstamo.")
-            return self.liquidacion_total()
+        # 1) Si hay buffer y LTV real > objetivo, intentamos microventa
+        if self.extra_colateral > 0 and real_ltv > LTV_OBJETIVO:
+            self.microventa(eventos)
+            # LTV ya se recalculó dentro de microventa
+            real_ltv = self.LTV_actual
+        elif self.extra_colateral <= 0 and real_ltv > LTV_OBJETIVO:
+            # Sin buffer, dejamos subir naturalmente (no microvendemos)
+            eventos.append({
+                "type": "no_buffer_high_ltv",
+                "ltv_effective": real_ltv,
+            })
+            print("⚠️ LTV efectivo por encima del 50% pero sin buffer disponible. Se deja correr.\n")
 
-        # 2) Si el LTV se pasa del 50% → intentamos microventa
-        if ltv > LTV_OBJETIVO:
-            print("\n⚠️ LTV por encima del objetivo. Intentando microventa...")
-            ok = self.microventa()
-            if not ok:
-                # Si no pudimos microvender (sin buffer / inestable), liquidamos todo
-                print("No fue posible estabilizar con microventa. Se liquida todo.")
-                return self.liquidacion_total()
-            else:
-                return 'microventa'
+        # 2) Lógica de margin call / liquidación sobre LTV EFECTIVO
+        if real_ltv >= LIQUIDATION_LTV:
+            evento_liq = self.liquidacion_total(motivo="LTV efectivo >= 80%")
+            eventos.append(evento_liq)
+        elif real_ltv >= MARGIN_CALL_LTV:
+            print("🚨 MARGIN CALL: LTV efectivo >= 72%")
+            eventos.append({
+                "type": "margin_call",
+                "ltv_effective": real_ltv,
+            })
+        else:
+            eventos.append({
+                "type": "safe",
+                "ltv_effective": real_ltv,
+            })
 
-        # 3) Todo en orden
-        print("✅ Préstamo en zona segura (LTV ≤ 50%)")
-        return 'seguro'
+        return eventos
 
-    def cerrar_prestamo(self, metodo='stablecoin'):
-        interes = self.calcular_interes()
-        if metodo == 'stablecoin':
-            total = self.cantidad_prestamo + interes
-            print(f"\n✅ Préstamo cerrado con stablecoin. Total pagado: ${total:.2f}")
-            print(f"Revenue prestamista: ${interes:.2f}")
-            self.cantidad_prestamo = 0.0
-        elif metodo == 'colateral':
-            self.precios = obtener_precios()
-            P = self.precios[self.token]
-            valor_colateral = self.colateral * P
-            fee = valor_colateral * LIQUIDATION_FEE
-            restante = valor_colateral - self.cantidad_prestamo - interes - fee
-            restante = max(0.0, restante)
-            print(f"\n✅ Préstamo cerrado usando colateral.")
-            print(f"Devuelto al usuario: ${restante:.2f}")
-            print(f"Revenue prestamista: ${interes + fee:.2f}")
-            self.cantidad_prestamo = 0.0
-            self.colateral = 0.0
-            self.extra_colateral = 0.0
 
-# --- FLUJO DE USO ---
 def simular_prestamo():
-    while True:
-        print("\n=== Simulación de Préstamo con Microventas ===")
-        token = input("¿Qué token usarás como colateral? (BTC/ETH): ").strip().upper()
-        cantidad = float(input("¿Cuánto deseas pedir prestado (USD)?: "))
+    print("=== Demo de simulación de préstamo en tiempo (casi) real ===\n")
+    token = input("Token colateral (BTC/ETH): ").strip().upper()
+    if token not in ("BTC", "ETH"):
+        print("Token no soportado.")
+        return
 
-        precios = obtener_precios()
-        precio_token = precios[token]
-        colateral_minimo = cantidad / (LTV_OBJETIVO * precio_token)
+    precios = obtener_precios()
+    precio_token = precios[token]
+    print(f"Precio actual de {token}: ${precio_token:,.2f} USD\n")
 
-        buffer_pct_str = input("¿Qué % de colateral adicional quieres como buffer? (ej. 0.2 = 20%, ENTER = 0): ").strip()
+    modo = input(
+        "Selecciona modo:\n"
+        "1) Solicitar un préstamo en USD (50% LTV, pides X, aportas colateral mínimo para 50% + buffer)\n"
+        "2) Tengo N unidades de colateral y quiero saber cuánto me prestan (50% del valor, sin buffer extra)\n"
+        "Opción (1/2): "
+    ).strip()
+
+    if modo == "1":
+        monto_prestamo = float(input("¿Cuánto deseas pedir prestado (USD)?: "))
+        colateral_minimo = monto_prestamo / (LTV_OBJETIVO * precio_token)
+
+        buffer_pct_str = input(
+            "¿Qué % adicional de buffer sobre el colateral mínimo quieres? "
+            "(ej. 0.2 = 20% extra, ENTER = 0): "
+        ).strip()
         buffer_pct = float(buffer_pct_str) if buffer_pct_str else 0.0
 
-        colateral_sugerido = colateral_minimo * (1 + buffer_pct)
+        colateral_total = colateral_minimo * (1 + buffer_pct)
 
-        print(f"\nPara un LTV inicial de 50%:")
-        print(f"- Colateral mínimo: {colateral_minimo:.6f} {token}")
-        print(f"- Colateral sugerido con buffer ({buffer_pct:.0%}): {colateral_sugerido:.6f} {token}")
+        print(f"\nColateral mínimo para 50% LTV: {colateral_minimo:.6f} {token}")
+        print(f"Colateral total con buffer ({buffer_pct:.0%}): {colateral_total:.6f} {token}\n")
 
-        colateral = float(input(f"¿Cuánto {token} aportarás como colateral?: "))
+        prestamo = Prestamo(
+            token=token,
+            cantidad_prestamo_usd=monto_prestamo,
+            colateral_unidades=colateral_total,
+            colateral_minimo_unidades=colateral_minimo,
+        )
 
-        prestamo = Prestamo(token, cantidad, colateral, buffer_pct=buffer_pct)
+    elif modo == "2":
+        colateral_total = float(input(f"¿Cuánto {token} quieres aportar como colateral?: "))
+        valor_colateral = colateral_total * precio_token
+        monto_prestamo = valor_colateral * LTV_OBJETIVO  # 50% del valor
+        # En este modo, todo el colateral es el mínimo requerido para 50% LTV (sin buffer)
+        colateral_minimo = colateral_total
 
+        print(f"\nValor de tu colateral: ${valor_colateral:,.2f}")
+        print(f"Monto máximo de préstamo (50% LTV): ${monto_prestamo:,.2f}\n")
+
+        prestamo = Prestamo(
+            token=token,
+            cantidad_prestamo_usd=monto_prestamo,
+            colateral_unidades=colateral_total,
+            colateral_minimo_unidades=colateral_minimo,
+        )
+    else:
+        print("Opción no válida.")
+        return
+
+    print("Iniciando loop de simulación. Ctrl+C para detener.\n")
+
+    try:
         while True:
-            accion = input("\nENTER = actualizar | 'add' = añadir colateral | 'cerrar' = cerrar préstamo | 'salir': ").strip().lower()
-            if accion == 'salir':
-                return
-            elif accion == 'add':
-                adicional = float(input("¿Cuánto colateral adicional (en unidades de token)?: "))
-                prestamo.agregar_colateral(adicional)
-            elif accion == 'cerrar':
-                metodo = input("¿Pagar con 'stablecoin' o 'colateral'?: ").strip().lower()
-                prestamo.cerrar_prestamo(metodo)
+            eventos = prestamo.tick()
+            # Si en este tick hubo liquidación, terminamos
+            if any(ev["type"] == "liquidation" for ev in eventos):
+                print("Simulación finalizada: el préstamo fue liquidado.\n")
                 break
-            else:
-                estado = prestamo.evaluar_riesgos()
-                if estado == 'liquidado':
-                    break
+            time.sleep(UPDATE_INTERVAL_SEC)
+    except KeyboardInterrupt:
+        print("\nSimulación interrumpida por el usuario.")
 
-# Ejecutar
+
 if __name__ == "__main__":
     simular_prestamo()
