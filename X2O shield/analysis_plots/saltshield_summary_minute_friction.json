@@ -1,0 +1,10 @@
+{
+  "n_starts": 1586881,
+  "n_liq_friction": 230134,
+  "p_liq_friction": 0.1450228467036911,
+  "mean_loss_given_liq_frac_friction": 0.2656395248745099,
+  "expected_loss_frac_friction": 0.038523800094317384,
+  "expected_loss_usd_friction": 385.23800094317386,
+  "slippage_pct": 0.01,
+  "fee_pct": 0.005
+}

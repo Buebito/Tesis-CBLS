@@ -1,0 +1,11 @@
+{
+  "N_SIM": 20000,
+  "p_liq_mc": 0.0406,
+  "mean_loss_given_liq_mc": 0.2704728561826776,
+  "expected_loss_frac_mc": 0.010981197961016709,
+  "expected_loss_usd_mc": 109.81197961016709,
+  "recover_factor": 1.0,
+  "p_liq_mc_eff": 0.0406,
+  "expected_loss_frac_mc_eff": 0.010981197961016709,
+  "expected_loss_usd_mc_eff": 109.81197961016709
+}
