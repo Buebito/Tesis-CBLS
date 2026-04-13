@@ -1,0 +1,38 @@
+# Tesis: Inferencia Bayesiana para Modelos de Volatilidad Estocástica
+# con Aplicación al Diseño de Coberturas en Préstamos Colateralizados con Bitcoin
+
+# Core numérico
+numpy>=1.26.4,<2.0
+pandas>=2.2.2,<3.0
+scipy>=1.11.0,<2.0
+
+# Visualización
+matplotlib>=3.8.0,<4.0
+seaborn>=0.13.0,<0.14.0
+
+# Estadística / econometría
+statsmodels>=0.14.0,<0.15.0
+arch>=6.0,<7.0                  # modelos GARCH como benchmark
+
+# Bayesiano / MCMC
+pymc>=5.10.0,<6.0               # framework MCMC con NUTS/HMC
+arviz>=0.17.0,<1.0              # diagnósticos MCMC (viene con pymc)
+
+# Aceleración
+numba>=0.59.0,<1.0              # JIT para el sampler manual
+
+# Métricas de evaluación
+properscoring>=0.1,<1.0         # CRPS y calibración
+
+# Progreso / utilidades
+tqdm>=4.66.0,<5.0
+python-dateutil>=2.9.0,<3.0
+
+# Notebooks
+ipykernel>=6.29.0,<7.0
+jupyterlab>=4.2.0,<5.0
+notebook>=7.2.0,<8.0
+ipywidgets>=8.1.0,<9.0
+
+# KDE (heredado de simulaciones previas)
+KDEpy>=1.1.8,<2.0
