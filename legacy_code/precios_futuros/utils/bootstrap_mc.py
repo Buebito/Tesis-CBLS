@@ -240,7 +240,7 @@ def load_price_series(
     csv_path: str,
     asset_col: Literal["BTC", "ETH"] = "BTC",
     date_col: str = "date",
-    resample_rule: str = "1H",
+    resample_rule: str = "1h",
 ) -> pd.Series:
     """
     Lee el CSV histórico y regresa una Serie de precios limpia
@@ -310,7 +310,7 @@ def run_future_price_simulation(
     asset_col: Literal["BTC", "ETH"] = "BTC",
     horizon_days: int = 365,
     n_sims: int = 2000,
-    resample_rule: str = "1H",
+    resample_rule: str = "1h",
     do_plots: bool = True,
 ):
     """

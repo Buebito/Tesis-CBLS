@@ -10,6 +10,7 @@ Tesis-CBLS/
 │   ├── bolsa_volatilidad/    # Optimización de bolsa de volatilidad
 │   ├── precios_futuros/      # Modelos de precios futuros
 │   ├── prestamos/            # Simulaciones de préstamos (Segment Tree + Markov)
+│   ├── modelo_financiero/    # Modelo financiero del negocio (P&L, break-even, $20M)
 │   ├── real_time_api/        # API de liquidación en tiempo real
 │   ├── X2O shield/           # Análisis de cobertura Salt Shield
 │   └── requirements.txt
