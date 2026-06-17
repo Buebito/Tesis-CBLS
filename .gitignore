@@ -20,10 +20,11 @@ venv/
 .vscode/
 
 # Datos locales (ajusta a tu estructura)
-data/
+# Anclado a la raiz: NO ignora el paquete Python tesis/data/ (codigo, no datos).
+/data/
 *.csv
 *.parquet
 *.feather
 
 # (opcional) permitir un sample chico versionado:
-!data/sample.csv
+!/data/sample.csv
