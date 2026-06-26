@@ -3,7 +3,7 @@
 > **¿Cuánto retorno esperar al invertir $20M USD en operar 
 > un negocio de préstamos colateralizados con BTC/ETH?**
 
-> Fecha: 2026-04-28 09:10 · Datos históricos: 2017-08-16 a 2026-01-04 · Préstamos simulados por escenario: 5,000  
+> Fecha: 2026-05-05 07:36 · Datos históricos: 2017-08-16 a 2026-01-04 · Préstamos simulados por escenario: 5,000  
 
 ---
 
@@ -288,13 +288,8 @@ Si la tasa alternativa cambia, el mes de crossover también:
 | 5.0% | Mes 1 |
 | 8.0% | Mes 1 |
 | 10.0% | Mes 1 |
-| 11.0% | Mes 1 |
 | 12.0% | Mes 1 |
-| 13.0% | >60 meses |
-| 14.0% | >60 meses |
 | 15.0% | >60 meses |
-| 18.0% | >60 meses |
-| 20.0% | >60 meses |
 
 ![Crossover capital propio vs BitGo+alt](img/07_crossover_bitgo.png)
 
@@ -463,4 +458,4 @@ Inicio -> [Devengar interés] -> ¿Margin Call?
    menor ingreso neto por préstamo.
 
 ---
-*Generado automáticamente por modelo_financiero.ipynb — 2026-04-28*
+*Generado automáticamente por modelo_financiero.ipynb — 2026-05-05*
