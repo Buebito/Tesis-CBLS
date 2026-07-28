@@ -341,26 +341,36 @@ B*(α) = inf{ b : P_{π(θ|y)}[max_{t∈[0,τ]} LTV_t(b) < L_liq] >= α }
 - [ ] Verificar con datos simulados (generar datos de un SV conocido, recuperar parámetros).
 - [ ] Escribir Capítulo 2 (Marco Teórico) en paralelo.
 
-### Fase 2: Estimación Real (3-4 semanas)
-- [ ] Estimar modelo SV con datos reales de BTC (retornos diarios).
-- [ ] Implementar en PyMC/Stan para comparar con implementación manual.
-- [ ] Diagnósticos de convergencia completos.
-- [ ] Análisis de sensibilidad a priors.
-- [ ] Escribir Capítulo 4.
+### Fase 2: Estimación Real (3-4 semanas) — ✅ código completado (2026-07-27)
+- [x] Estimar modelo SV con datos reales de BTC (retornos diarios). → μ≈−7.21, φ≈0.90, σ_η≈0.58
+- [x] Implementar en PyMC/Stan para comparar con implementación manual. → NUTS ~7× ESS del manual, medias concuerdan
+- [x] Diagnósticos de convergencia completos. → R̂≤1.02, 0 divergencias (NUTS)
+- [x] Análisis de sensibilidad a priors. → posteriors robustas (φ∈[0.901,0.906])
+- [x] Benchmark GARCH(1,1). → IGARCH (α+β=1.0) vs. SV estacionario; corr vol 0.80
+- [ ] Escribir Capítulo 4. (redacción pendiente)
 
-### Fase 3: Simulación y Pricing (4-5 semanas)
-- [ ] Generar trayectorias Monte Carlo con posterior del SV.
-- [ ] Comparar con KDE Bootstrap existente.
-- [ ] Implementar modelo frecuencia-severidad Bayesiano.
-- [ ] Calcular primas por plazo y LTV.
-- [ ] Diseñar cobertura óptima (buffer Bayesiano).
-- [ ] Escribir Capítulos 5, 6 y 7.
+> Resultados y decisiones: [`tesis/FASE2_RESULTADOS.md`](../../tesis/FASE2_RESULTADOS.md) ·
+> Notebook: `tesis/notebooks/03_sv_estimacion_btc_real.ipynb`
 
-### Fase 4: Validación (3-4 semanas)
-- [ ] Backtesting con split temporal.
-- [ ] Extensión a ETH.
-- [ ] Métricas de evaluación (CRPS, coverage, log-score).
-- [ ] Escribir Capítulo 8.
+### Fase 3: Simulación y Pricing (4-5 semanas) — ✅ código completado (2026-07-28)
+- [x] Generar trayectorias Monte Carlo con posterior del SV. → notebook 04, propaga incertidumbre epistémica
+- [x] Comparar con KDE Bootstrap existente. → SV condicional vs bootstrap incondicional; divergen a corto plazo
+- [x] Implementar modelo frecuencia-severidad Bayesiano. → q de trayectorias + severidad Gamma MCMC
+- [x] Calcular primas por plazo y LTV. → tabla tarifa 90/180/365 × LTV 0.40–0.70 (notebook 05)
+- [x] Diseñar cobertura óptima (buffer Bayesiano). → buffer con IC; SV pide menos que bootstrap
+- [ ] Escribir Capítulos 5, 6 y 7. (redacción pendiente)
+
+> Resultados y decisiones: [`tesis/FASE3_RESULTADOS.md`](../../tesis/FASE3_RESULTADOS.md) ·
+> Notebooks: `04_sv_simulacion_trayectorias.ipynb`, `05_pricing_buffer_bayesiano.ipynb`
+
+### Fase 4: Validación (3-4 semanas) — ✅ código completado (2026-07-28)
+- [x] Backtesting con split temporal. → filtro de partículas one-step sobre test 2024-2026
+- [x] Extensión a ETH. → marco generaliza; en ETH el SV calibra bien (PIT p=0.089)
+- [x] Métricas de evaluación (CRPS, coverage, log-score). → módulo forecast_eval.py; SV≈GARCH≫iid
+- [ ] Escribir Capítulo 8. (redacción pendiente)
+
+> Resultados y decisiones: [`tesis/FASE4_RESULTADOS.md`](../../tesis/FASE4_RESULTADOS.md) ·
+> Notebook: `tesis/notebooks/06_validacion_backtest.ipynb` · Hallazgo: motiva SV-t (errores Student-t)
 
 ### Fase 5: Escritura Final (3-4 semanas)
 - [ ] Capítulo 1 (Introducción) y Capítulo 9 (Conclusiones).

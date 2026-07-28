@@ -484,6 +484,7 @@ def fit_sv_pymc(
     n_samples: int = 2_000,
     n_chains: int = 4,
     target_accept: float = 0.9,
+    tune: int | None = None,
     seed: int = 42,
 ) -> Any:
     """Ajusta el modelo SV usando PyMC con NUTS.
@@ -501,6 +502,7 @@ def fit_sv_pymc(
         raise ImportError("PyMC no está instalado. Ejecuta: pip install pymc")
 
     pr = priors or SVPriors()
+    y = np.asarray(y, dtype=float)
 
     with pm.Model() as sv_model:
         # Priors
@@ -513,27 +515,24 @@ def fit_sv_pymc(
         sigma_eta = pm.InverseGamma("sigma_eta_sq", alpha=pr.a_sigma, beta=pr.b_sigma)
         sigma = pm.Deterministic("sigma_eta", pt.sqrt(sigma_eta))
 
-        # Proceso latente h como GaussianRandomWalk
-        # h_t = mu + phi*(h_{t-1} - mu) + sigma_eta * eta_t
-        # Esto es un AR(1) centrado en mu.
-        # PyMC no tiene AR(1) directo, usamos innovaciones.
-        h_innov = pm.Normal("h_innov", mu=0, sigma=1, shape=len(y))
-        h_init = mu + sigma / pt.sqrt(1 - phi**2) * h_innov[0]
-
-        # Construir h recursivamente con scan
-        def step(innov, h_prev, mu_, phi_, sigma_):
-            return mu_ + phi_ * (h_prev - mu_) + sigma_ * innov
-
-        h_rest, _ = pytensor.scan(
-            fn=step,
-            sequences=[h_innov[1:]],
-            outputs_info=[h_init],
-            non_sequences=[mu, phi, sigma],
+        # Proceso latente h: AR(1) estacionario centrado en mu.
+        #   h_t = mu + phi*(h_{t-1} - mu) + sigma_eta * eta_t
+        #       = mu*(1 - phi) + phi*h_{t-1} + sigma_eta * eta_t
+        # Se usa pm.AR (logp vectorizado, sin scan de Python -> mucho más rápido
+        # que la construcción recursiva). El estado inicial usa la distribución
+        # estacionaria N(mu, sigma_eta^2 / (1 - phi^2)).
+        rho = pt.stack([mu * (1.0 - phi), phi])  # [constante, coef AR(1)]
+        init_dist = pm.Normal.dist(mu=mu, sigma=sigma / pt.sqrt(1.0 - phi**2))
+        h = pm.AR(
+            "h",
+            rho=rho,
+            sigma=sigma,
+            init_dist=init_dist,
+            constant=True,
+            steps=len(y) - 1,
         )
-        h = pt.concatenate([[h_init], h_rest])
-        pm.Deterministic("h", h)
 
-        # Observaciones
+        # Observaciones: y_t | h_t ~ N(0, exp(h_t))
         pm.Normal(
             "y_obs",
             mu=0,
@@ -542,15 +541,44 @@ def fit_sv_pymc(
         )
 
         # Sampleo
+        # progressbar=False: evita que el widget de progreso de ipywidgets
+        # "trague" el stdout posterior al ejecutar vía nbconvert.
         trace = pm.sample(
             draws=n_samples,
+            tune=tune if tune is not None else n_samples,
             chains=n_chains,
             target_accept=target_accept,
             random_seed=seed,
+            progressbar=False,
             return_inferencedata=True,
         )
 
     return trace
+
+
+def idata_to_mcmc_result(idata: Any) -> Dict[str, np.ndarray]:
+    """Convierte el InferenceData de :func:`fit_sv_pymc` al dict que consumen el
+    simulador de trayectorias y el pricing.
+
+    El simulador (`trajectory_simulator`) y el pricing (`bayesian_premium`) esperan
+    el mismo formato que produce el sampler manual ``SVMetropolisWithinGibbs.run()``:
+    un dict con ``'mu'``, ``'phi'``, ``'sigma_eta'`` (cada uno shape ``(n_samples,)``)
+    y ``'h'`` (shape ``(n_samples, T)``). Este helper aplana las dimensiones
+    ``(chain, draw)`` de la posterior NUTS en un único eje de muestras.
+    """
+    post = idata.posterior
+
+    def _flat(name: str) -> np.ndarray:
+        # stack -> última dimensión es 'sample'; para escalares queda (n,),
+        # para h queda (T, n) que trasponemos a (n, T).
+        return post[name].stack(sample=("chain", "draw")).values
+
+    return {
+        "mu": _flat("mu"),
+        "phi": _flat("phi"),
+        "sigma_eta": _flat("sigma_eta"),
+        "h": _flat("h").T,  # (T, n) -> (n, T)
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════

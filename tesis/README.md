@@ -31,6 +31,7 @@ Modelos nuevos de la investigacion:
 
 - **`sv_model/stochastic_volatility.py`** -- Modelo de Volatilidad Estocastica Bayesiano (Taylor 1982 / Kim-Shephard-Chib 1998). MCMC con Metropolis-within-Gibbs y wrapper PyMC/NUTS.
 - **`sv_model/trajectory_simulator.py`** -- Simulador de trayectorias posterior-predictivas que propaga incertidumbre epistemica y aleatorica.
+- **`sv_model/forecast_eval.py`** -- Evaluacion de pronostico out-of-sample: filtro de particulas SV, benchmarks GARCH/i.i.d. y metricas (log-score, CRPS, coverage, PIT).
 - **`buffer/bayesian_buffer.py`** -- Optimizador de buffer bayesiano usando trayectorias SV. Comparacion historica vs. bayesiana vs. bootstrap.
 - **`pricing/bayesian_premium.py`** -- Pricing bayesiano de primas con descomposicion frecuencia-severidad (Gamma posterior para LGL + costos operativos).
 
@@ -42,8 +43,16 @@ Utilidades de carga de datos compartidas por todos los modulos.
 ### `notebooks/`
 Notebooks de analisis exploratorio y validacion de modelos:
 
-- **`01_analisis_exploratorio.ipynb`** -- EDA de precios historicos BTC/ETH.
-- **`02_sv_sintetico_validacion.ipynb`** -- Validacion del modelo SV con datos sinteticos.
+- **`01_analisis_exploratorio.ipynb`** -- EDA de precios historicos BTC/ETH (Fase 1, Cap. 3).
+- **`02_sv_sintetico_validacion.ipynb`** -- Validacion del modelo SV con datos sinteticos (Fase 1, Cap. 4).
+- **`03_sv_estimacion_btc_real.ipynb`** -- Estimacion SV sobre BTC real: manual vs. NUTS,
+  diagnosticos, benchmark GARCH(1,1) y sensibilidad a priors (Fase 2, Cap. 4).
+- **`04_sv_simulacion_trayectorias.ipynb`** -- Trayectorias Monte Carlo con la posterior SV vs.
+  KDE-Bootstrap, analisis por horizonte y backtest de volatilidad (Fase 3, Cap. 5).
+- **`05_pricing_buffer_bayesiano.ipynb`** -- Frecuencia-severidad Bayesiano, primas por plazo×LTV
+  y buffer optimo con intervalos de credibilidad (Fase 3, Cap. 6-7).
+- **`06_validacion_backtest.ipynb`** -- Validacion out-of-sample: filtro de particulas SV vs.
+  GARCH vs. i.i.d. (log-score, CRPS, PIT) en BTC y ETH (Fase 4, Cap. 8).
 
 ### `results/`
 Directorio para outputs generados por los notebooks y scripts. Actualmente vacio.
